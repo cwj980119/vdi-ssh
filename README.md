@@ -29,11 +29,20 @@
 
 대화형 터미널에는 Windows ConPTY를 사용합니다. 원격 명령은 **서버 EXE를 실행한 Windows 계정의 권한**으로 실행됩니다. 일반 명령 작업에는 관리자 권한이 필요하지 않습니다. SSH 사용자 이름 `vdi`는 접속용 별칭이며 Windows 계정을 전환하지 않습니다.
 
-## 빠른 시작
+## 역할 구분
+
+| 역할 | 사용하는 컴퓨터 | 하는 작업 |
+|---|---|---|
+| **호스트** | 제어할 Windows VDI | EXE 압축 해제, 공개키 등록과 허용 IP 설정, 서버 시작, 화면 URL 보관 |
+| **접속자** | VDI에 접속할 사내 PC | SSH 키 생성, 공개키를 호스트에 전달, SSH·SFTP·SCP·브라우저·VS Code로 접속 |
+
+`vdi_access` **개인키**는 접속자 PC에서만 보관합니다. `vdi_access.pub` **공개키**만 호스트 VDI로 전달합니다. 화면 URL의 `#` 뒤 토큰은 접속 권한과 같으므로, 호스트가 실제 접속자에게만 전달하고 제3자에게 공유하지 마세요.
+
+## 역할별 빠른 시작
 
 아래는 VDI 주소가 `10.20.30.40`, 접속 PC 주소가 `10.20.30.50`인 예시입니다. 실제 환경의 IP로 바꿔 사용하세요.
 
-### 1. 접속 PC에서 SSH 키 생성
+### 1. 접속자: SSH 키 생성 및 공개키 전달
 
 접속할 사내 PC의 PowerShell에서 실행합니다.
 
@@ -44,7 +53,7 @@ ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\vdi_access" -C "vdi-access"
 
 키 생성 중 암호를 설정할 수 있습니다. 같은 이름의 키가 있다면 덮어쓰지 말고 다른 이름을 사용하세요. 생성된 **`vdi_access.pub` 공개키만 VDI에 복사**합니다. 개인키 `vdi_access`는 접속 PC에 보관합니다.
 
-### 2. VDI에서 다운로드 및 실행
+### 2. 호스트: VDI에서 초기 설정 및 서버 시작
 
 공개 저장소이므로 GitHub 로그인 없이 조회·다운로드·clone할 수 있습니다. VDI의 PowerShell에서 실행합니다.
 
@@ -67,7 +76,7 @@ Git을 사용할 수 없다면 위의 [실행 파일 ZIP](https://github.com/cwj
 
 `screen-init`은 화면용 HTTPS 인증서와 32바이트 접근 토큰을 `%APPDATA%\VDISSH`에 생성하고, 접속 URL을 표시합니다. 이 URL에는 토큰이 포함되므로 다른 사람에게 공유하지 마세요. `Start-VDI-Host.cmd`를 더블 클릭하거나 `Start-VDI-Host.ps1`을 실행하면 SSH, 파일 전송, 화면 서버가 함께 시작됩니다. 서버 창은 실행 상태로 유지하며 `Ctrl+C`로 종료할 수 있습니다.
 
-### 3. 사내 PC에서 VDI 접속
+### 3. 접속자: 사내 PC에서 SSH 접속
 
 다시 **접속 PC**의 PowerShell에서 실행합니다.
 
@@ -83,9 +92,9 @@ ssh -o IdentitiesOnly=yes -i "$env:USERPROFILE\.ssh\vdi_access" -p 2222 vdi@10.2
 ssh -o IdentitiesOnly=yes -i "$env:USERPROFILE\.ssh\vdi_access" -p 2222 vdi@10.20.30.40 "Get-Date; whoami"
 ```
 
-## 화면 공유와 원격 제어
+## 접속자: 화면 공유와 원격 제어
 
-호스트 창에 표시된 아래 형태의 URL을 접속 PC 브라우저에서 엽니다.
+호스트 VDI에서 `screen-init`과 `Start-VDI-Host.cmd`를 실행한 뒤, **접속자 PC** 브라우저에서 호스트 창에 표시된 아래 형태의 URL을 엽니다.
 
 ```text
 https://10.20.30.40:8443/#화면-접근-토큰
@@ -93,9 +102,9 @@ https://10.20.30.40:8443/#화면-접근-토큰
 
 자체 서명 인증서를 사용하므로 처음 한 번 브라우저 경고가 표시됩니다. 접속 주소와 지문을 VDI 호스트 화면에서 확인한 뒤 진행하세요. 화면은 4fps JPEG 스트림이며, **원격 제어 켜기**를 누른 뒤 클릭·키보드 입력이 VDI의 현재 활성 데스크톱으로 전송됩니다. UAC 보안 데스크톱과 더 높은 권한의 창은 Windows UIPI 정책에 따라 캡처 또는 제어되지 않을 수 있습니다.
 
-## 파일 전송: SFTP와 SCP
+## 접속자: 파일 전송(SFTP와 SCP)
 
-SFTP는 SSH와 같은 키·포트·사용자 이름을 사용합니다. 초기 폴더는 VDI 계정의 홈 폴더입니다.
+**접속자 PC**에서 실행합니다. SFTP는 SSH와 같은 키·포트·사용자 이름을 사용하며, 원격 경로의 초기 폴더는 **호스트 VDI 실행 계정의 홈 폴더**입니다.
 
 ```powershell
 sftp -o IdentitiesOnly=yes -i "$env:USERPROFILE\.ssh\vdi_access" -P 2222 vdi@10.20.30.40
@@ -106,9 +115,9 @@ scp -o IdentitiesOnly=yes -i "$env:USERPROFILE\.ssh\vdi_access" -P 2222 .\report
 
 최신 OpenSSH의 `scp`는 SFTP 프로토콜을 사용합니다. 레거시 `scp -O` 프로토콜은 지원하지 않습니다.
 
-## VS Code Remote SSH
+## 접속자: VS Code Remote SSH
 
-접속 PC의 VS Code에 **Remote - SSH** 확장을 설치한 후, `%USERPROFILE%\.ssh\config`에 추가합니다.
+**접속자 PC**의 VS Code에 **Remote - SSH** 확장을 설치한 후, 접속자 PC의 `%USERPROFILE%\.ssh\config`에 추가합니다.
 
 ```text
 Host company-vdi
@@ -127,7 +136,7 @@ VS Code의 공식 Windows 호스트 지원은 Windows OpenSSH Server 기준입�
 "remote.SSH.remotePlatform": { "company-vdi": "windows" }
 ```
 
-## 설정과 키 보관
+## 호스트: 설정과 키 보관
 
 기본 설정은 `%APPDATA%\VDISSH`에 저장됩니다.
 
@@ -141,15 +150,19 @@ VS Code의 공식 Windows 호스트 지원은 Windows OpenSSH Server 기준입�
 
 개인키와 운영 설정은 Git 저장소에 올리지 않습니다. IP를 변경할 때는 `config.json`을 편집하고 서버를 재시작합니다. `init`은 기존 설정을 덮어쓰지 않습니다. 여러 PC를 허용하려면 초기 설정 때 `--allow-ip 10.20.30.50,10.20.30.51`을 지정할 수 있습니다.
 
-## 연결 진단
+## 역할별 연결 진단
 
-VDI에서 실행 환경과 주소를 확인합니다.
+### 호스트 VDI에서 확인
+
+실행 환경과 주소를 확인합니다.
 
 ```powershell
 .\vdi-ssh.exe doctor
 ```
 
-서버가 실행 중인 상태에서 접속 PC의 TCP 연결을 확인합니다.
+### 접속자 PC에서 확인
+
+서버가 실행 중인 상태에서 호스트 VDI의 TCP 연결을 확인합니다.
 
 ```powershell
 Test-NetConnection -ComputerName 10.20.30.40 -Port 2222
@@ -164,7 +177,7 @@ Test-NetConnection -ComputerName 10.20.30.40 -Port 2222
 
 프로그램은 방화벽, Windows 서비스, 자동 시작 설정을 변경하지 않습니다. TCP `2222`(SSH/SFTP)와 `8443`(화면 HTTPS)를 회사 정책에 맞게 접속 PC의 IP에만 허용해야 할 수 있습니다. Windows 로그오프나 재부팅 후에는 `Start-VDI-Host.cmd`를 다시 실행하세요. VDI 클라이언트를 닫았을 때 세션이 유지되는지는 해당 VDI 정책에 따릅니다. 추가 진단과 제약은 [상세 설명서](README.ko.md)를 참고하세요.
 
-## 업데이트
+## 호스트: 업데이트
 
 실행 중인 서버를 `Ctrl+C`로 종료한 후, 저장소 최상위 폴더에서 실행합니다.
 

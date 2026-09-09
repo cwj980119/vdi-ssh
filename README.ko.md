@@ -1,4 +1,4 @@
-# VDI SSH 0.1.0
+# VDI SSH 0.2.0
 
 사내 Windows VDI에서 실행하는 설치형 서비스 없는 SSH 서버입니다. VDI에 `vdi-ssh.exe`를 복사하고 실행하면, 허용한 사내 PC에서 일반 `ssh` 클라이언트로 PowerShell을 사용할 수 있습니다. VDI에 OpenSSH, Python, .NET 또는 Go를 설치할 필요가 없습니다.
 
@@ -25,7 +25,16 @@
 
 서버 창은 실행 상태로 유지해야 합니다. 재부팅이나 Windows 로그오프 후에는 다시 실행해야 합니다. VDI 클라이언트 연결을 끊었을 때 Windows 세션이 유지되는지는 VDI 정책에 따릅니다. 서버는 서비스·자동 시작·방화벽 규칙을 자동 등록하지 않습니다.
 
-## 1. 접속할 사내 PC에서 키 만들기
+## 역할 구분
+
+| 역할 | 사용하는 컴퓨터 | 하는 작업 |
+|---|---|---|
+| **호스트** | 제어 대상 Windows VDI | EXE 압축 해제, 공개키 등록, 허용 IP·포트 설정, 서버 시작, 화면 URL 보관 |
+| **접속자** | VDI에 접속할 사내 PC | SSH 키 생성, 공개키를 호스트에 전달, SSH·SFTP·SCP·브라우저·VS Code로 접속 |
+
+`vdi_access` **개인키**는 접속자 PC에서만 보관합니다. `vdi_access.pub` **공개키**만 호스트 VDI로 복사합니다. 화면 URL의 `#` 뒤 토큰은 접속 권한과 같으므로, 호스트가 실제 접속자에게만 전달하고 제3자에게 공유하지 마세요.
+
+## 1. 접속자: 사내 PC에서 키 만들기
 
 PowerShell에서 실행합니다. 같은 이름의 키가 이미 있다면 새 파일 이름을 사용하십시오.
 
@@ -35,7 +44,7 @@ ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\vdi_access" -C "vdi-access"
 
 키 생성 중 암호를 설정할 수 있습니다. **`vdi_access.pub` 공개키만 VDI로 복사**합니다. 개인키 `vdi_access`는 접속 PC에 보관합니다.
 
-## 2. VDI에서 초기 설정
+## 2. 호스트: VDI에서 초기 설정
 
 배포 ZIP을 사용자 폴더에 풀고 해당 폴더에서 PowerShell을 엽니다. 아래 IP 주소를 실제 주소로 바꿉니다.
 
@@ -61,7 +70,7 @@ ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\vdi_access" -C "vdi-access"
 
 설정 위치를 바꾸려면 `init`, `serve`, `serve-all`, `screen-init`에 동일한 `--data-dir C:\Users\사용자\VDISSH`를 지정합니다.
 
-## 3. VDI에서 서버 실행
+## 3. 호스트: VDI에서 서버 실행
 
 화면 공유도 함께 쓰려면 최초 한 번 화면 HTTPS 주소를 설정합니다.
 
@@ -78,7 +87,7 @@ ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\vdi_access" -C "vdi-access"
 
 화면에 Windows 실행 계정, SSH/SFTP 주소와 화면 URL이 표시됩니다. 이 창을 열어둡니다. `Ctrl+C`로 종료합니다. 화면 공유를 사용하지 않을 때는 기존처럼 `.\vdi-ssh.exe serve`를 실행해 SSH/SFTP만 시작할 수 있습니다.
 
-## 4. 사내 PC에서 접속
+## 4. 접속자: 사내 PC에서 SSH 접속
 
 ```powershell
 ssh -i "$env:USERPROFILE\.ssh\vdi_access" -p 2222 vdi@10.20.30.40
@@ -92,15 +101,15 @@ ssh -i "$env:USERPROFILE\.ssh\vdi_access" -p 2222 vdi@10.20.30.40
 ssh -i "$env:USERPROFILE\.ssh\vdi_access" -p 2222 vdi@10.20.30.40 "Get-Date; whoami"
 ```
 
-## 화면 공유와 원격 제어
+## 접속자: 화면 공유와 원격 제어
 
-접속 PC의 브라우저에서 호스트 창에 표시된 URL을 엽니다. `#` 뒤 토큰은 브라우저에서만 처리되어 HTTP 요청에는 포함되지 않습니다. 자체 서명 인증서를 사용하므로 처음 한 번 인증서 경고가 나타납니다. VDI 호스트에 표시된 주소를 확인한 뒤 진행하세요.
+호스트 VDI에서 `screen-init`과 `Start-VDI-Host.cmd`를 실행한 뒤, 접속자 PC의 브라우저에서 호스트 창에 표시된 URL을 엽니다. `#` 뒤 토큰은 브라우저에서만 처리되어 HTTP 요청에는 포함되지 않습니다. 자체 서명 인증서를 사용하므로 처음 한 번 인증서 경고가 나타납니다. VDI 호스트에 표시된 주소를 확인한 뒤 진행하세요.
 
 화면은 4fps JPEG 스트림입니다. 화면의 **원격 제어 켜기**를 눌러야 마우스와 키보드가 전송됩니다. 입력은 VDI의 현재 활성 데스크톱으로 전달됩니다. Windows UAC 보안 데스크톱과 더 높은 권한의 창은 Windows UIPI 때문에 캡처 또는 제어되지 않을 수 있습니다.
 
-## 파일 전송
+## 접속자: 파일 전송
 
-SFTP와 최신 OpenSSH의 `scp` 기본 모드는 SSH와 같은 키·포트·별칭을 사용합니다.
+접속자 PC의 PowerShell에서 실행합니다. SFTP와 최신 OpenSSH의 `scp` 기본 모드는 SSH와 같은 키·포트·별칭을 사용하며, 원격 경로의 초기 폴더는 호스트 VDI 실행 계정의 홈 폴더입니다.
 
 ```powershell
 sftp -o IdentitiesOnly=yes -i "$env:USERPROFILE\.ssh\vdi_access" -P 2222 vdi@10.20.30.40
@@ -111,9 +120,9 @@ scp -o IdentitiesOnly=yes -i "$env:USERPROFILE\.ssh\vdi_access" -P 2222 .\report
 
 초기 폴더는 VDI 실행 계정의 홈 폴더입니다. 레거시 `scp -O`는 지원하지 않습니다.
 
-## VS Code Remote SSH
+## 접속자: VS Code Remote SSH
 
-접속 PC의 VS Code에 Remote - SSH 확장을 설치한 뒤 `%USERPROFILE%\.ssh\config`에 아래 내용을 추가합니다.
+접속자 PC의 VS Code에 Remote - SSH 확장을 설치한 뒤, 접속자 PC의 `%USERPROFILE%\.ssh\config`에 아래 내용을 추가합니다.
 
 ```text
 Host company-vdi
@@ -134,21 +143,25 @@ VS Code의 공식 Windows 지원은 Windows OpenSSH Server 기준입니다. 이 
 
 키를 여러 개 사용하는 PC에서는 `-o IdentitiesOnly=yes`를 추가하면 지정한 키만 사용합니다. 연결당 동시 세션 1개, 서버 전체 동시 연결 4개가 기본값입니다. 독립적인 `ssh` 연결을 추가로 열 수 있습니다. 창 없는 shell 요청에는 PTY가 필요하므로 파이프에서 대화형 연결을 시도한다면 `ssh -tt ...`를 사용합니다.
 
-## 접속이 안 될 때
+## 역할별 연결 진단
 
-VDI에서 실행 환경과 주소를 확인합니다.
+### 호스트 VDI에서 확인
+
+실행 환경과 주소를 확인합니다.
 
 ```powershell
 .\vdi-ssh.exe doctor
 ```
 
-접속 PC에서 서버를 실행해 둔 VDI의 포트를 확인합니다.
+### 접속자 PC에서 확인
+
+서버를 실행해 둔 호스트 VDI의 포트를 확인합니다.
 
 ```powershell
 Test-NetConnection -ComputerName 10.20.30.40 -Port 2222
 ```
 
-또는 같은 EXE를 접속 PC에 복사하고 다음 진단을 실행합니다.
+또는 같은 EXE를 접속자 PC에 복사하고 다음 진단을 실행합니다.
 
 ```powershell
 .\vdi-ssh.exe doctor --target 10.20.30.40:2222
