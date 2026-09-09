@@ -1,0 +1,8 @@
+.tools/
+dist/
+build/
+.test-data/
+vdi-ssh-data/
+*.log
+*.exe
+app/
