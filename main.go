@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -25,7 +27,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type Config struct {
 	Listen           string   `json:"listen"`
@@ -33,6 +35,8 @@ type Config struct {
 	AllowFrom        []string `json:"allow_from"`
 	WorkingDirectory string   `json:"working_directory"`
 	MaxConnections   int      `json:"max_connections"`
+	ScreenListen     string   `json:"screen_listen,omitempty"`
+	ScreenToken      string   `json:"screen_token,omitempty"`
 }
 
 func defaultDataDir() string {
@@ -55,7 +59,9 @@ func run(args []string) error {
 		fmt.Println(`VDI SSH ` + version + ` - portable Windows SSH server
 
   vdi-ssh init --public-key CLIENT.pub --listen VDI_IP:2222 --allow-ip CLIENT_IP
-  vdi-ssh serve
+  vdi-ssh screen-init --listen VDI_IP:8443
+  vdi-ssh serve              # SSH, SFTP/SCP
+  vdi-ssh serve-all          # SSH, SFTP/SCP, screen sharing
   vdi-ssh doctor [--target VDI_IP:2222]
 
 Use --data-dir DIR with init/serve to select a configuration directory.
@@ -69,6 +75,10 @@ See README.ko.md for setup and supported features.`)
 		return initialize(args[1:])
 	case "serve":
 		return serveCommand(args[1:])
+	case "serve-all":
+		return serveAllCommand(args[1:])
+	case "screen-init":
+		return screenInitialize(args[1:])
 	case "doctor":
 		return doctor(args[1:])
 	case "version":
@@ -104,7 +114,7 @@ func initialize(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg := Config{*listen, *name, strings.Split(*allow, ","), home, 4}
+	cfg := Config{Listen: *listen, Username: *name, AllowFrom: strings.Split(*allow, ","), WorkingDirectory: home, MaxConnections: 4}
 	if _, err = validateConfig(cfg); err != nil {
 		return err
 	}
@@ -150,6 +160,41 @@ func initialize(args []string) error {
 	fmt.Println("Host fingerprint:", ssh.FingerprintSHA256(signer.PublicKey()))
 	fmt.Printf("Authorized keys: %d\nListen: %s\nSSH alias: %s\n", len(keys), cfg.Listen, cfg.Username)
 	fmt.Printf("Start with: .\\vdi-ssh.exe serve --data-dir '%s'\n", strings.ReplaceAll(*dir, "'", "''"))
+	return nil
+}
+
+func screenInitialize(args []string) error {
+	f := flag.NewFlagSet("screen-init", flag.ContinueOnError)
+	dir := f.String("data-dir", defaultDataDir(), "configuration directory")
+	listen := f.String("listen", "", "specific VDI IP:HTTPS port, for example 10.20.30.40:8443")
+	if err := f.Parse(args); err != nil {
+		return err
+	}
+	if *listen == "" {
+		return errors.New("--listen is required")
+	}
+	cfg, err := loadConfig(*dir)
+	if err != nil {
+		return err
+	}
+	cfg.ScreenListen = *listen
+	if _, err := validateConfig(cfg); err != nil {
+		return err
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err = rand.Read(tokenBytes); err != nil {
+		return err
+	}
+	cfg.ScreenToken = base64.RawURLEncoding.EncodeToString(tokenBytes)
+	if err = validateScreenConfig(cfg); err != nil { return err }
+	if err = ensureScreenCertificate(*dir, cfg.ScreenListen); err != nil {
+		return err
+	}
+	if err = writeConfig(*dir, cfg); err != nil { return err }
+	addressHash := sha256.Sum256([]byte(cfg.ScreenToken))
+	fmt.Printf("Screen sharing is configured on https://%s\n", cfg.ScreenListen)
+	fmt.Printf("Open after serve-all: https://%s/#%s\n", cfg.ScreenListen, cfg.ScreenToken)
+	fmt.Printf("Screen access token SHA-256: %x\n", addressHash[:])
 	return nil
 }
 
@@ -230,24 +275,48 @@ func validateConfig(cfg Config) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
-func serveCommand(args []string) error {
-	f := flag.NewFlagSet("serve", flag.ContinueOnError)
-	dir := f.String("data-dir", defaultDataDir(), "configuration directory")
-	if err := f.Parse(args); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(filepath.Join(*dir, "config.json"))
+func loadConfig(dir string) (Config, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
-		return err
+		return Config{}, err
 	}
 	var cfg Config
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&cfg); err != nil {
-		return err
+		return Config{}, err
 	}
 	if err = decoder.Decode(new(any)); err != io.EOF {
-		return errors.New("config.json contains trailing data")
+		return Config{}, errors.New("config.json contains trailing data")
+	}
+	return cfg, nil
+}
+
+func writeConfig(dir string, cfg Config) error {
+	encoded, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "config.json"), append(encoded, '\n'), 0600)
+}
+
+func serveCommand(args []string) error {
+	return runServices(args, false)
+}
+
+func serveAllCommand(args []string) error {
+	return runServices(args, true)
+}
+
+func runServices(args []string, withScreen bool) error {
+	f := flag.NewFlagSet("serve", flag.ContinueOnError)
+	dir := f.String("data-dir", defaultDataDir(), "configuration directory")
+	if err := f.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(*dir)
+	if err != nil {
+		return err
 	}
 	prefixes, err := validateConfig(cfg)
 	if err != nil {
@@ -283,10 +352,19 @@ func serveCommand(args []string) error {
 		identity = account.Username
 	}
 	fmt.Printf("VDI SSH %s\nWindows account: %s\nHost fingerprint: %s\n", version, identity, ssh.FingerprintSHA256(signer.PublicKey()))
-	fmt.Printf("Connect as %s to %s. Ctrl+C stops the server.\n", cfg.Username, cfg.Listen)
+	fmt.Printf("SSH/SFTP/SCP: %s@%s. Ctrl+C stops the server.\n", cfg.Username, cfg.Listen)
 	logger.Info("server_start", "listen", cfg.Listen, "windows_account", identity)
 	s := &Server{cfg: cfg, prefixes: prefixes, keyPath: keyPath, signer: signer, log: logger}
-	err = s.Serve(ctx, listener)
+	if !withScreen {
+		err = s.Serve(ctx, listener)
+	} else {
+		if err = validateScreenConfig(cfg); err != nil {
+			listener.Close()
+			return err
+		}
+		fmt.Printf("Screen: https://%s/#%s\n", cfg.ScreenListen, cfg.ScreenToken)
+		err = serveAll(ctx, s, listener, *dir, logger)
+	}
 	logger.Info("server_stop")
 	return err
 }

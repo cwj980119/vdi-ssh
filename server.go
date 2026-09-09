@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -151,29 +152,64 @@ func (s *Server) connection(parent context.Context, raw net.Conn) {
 		}
 	}()
 	var wg sync.WaitGroup
-	busy := make(chan struct{}, 1)
 	for nc := range channels {
-		if nc.ChannelType() != "session" {
-			nc.Reject(ssh.Prohibited, "only terminal sessions are supported")
+		if nc.ChannelType() == "direct-tcpip" {
+			wg.Add(1)
+			go func(n ssh.NewChannel) { defer wg.Done(); s.directTCP(ctx, n) }(nc)
 			continue
 		}
-		select {
-		case busy <- struct{}{}:
-		default:
-			nc.Reject(ssh.ResourceShortage, "one active session per connection")
+		if nc.ChannelType() != "session" {
+			nc.Reject(ssh.Prohibited, "unsupported channel type")
 			continue
 		}
 		ch, reqs, err := nc.Accept()
 		if err != nil {
-			<-busy
 			continue
 		}
 		wg.Add(1)
-		go func() { defer wg.Done(); defer func() { <-busy }(); s.session(ctx, ch, reqs) }()
+		go func() { defer wg.Done(); s.session(ctx, ch, reqs) }()
 	}
 	cancel()
 	wg.Wait()
 	s.log.Info("disconnected", "peer", raw.RemoteAddr().String())
+}
+
+type directTCPRequest struct {
+	DestAddr   string
+	DestPort   uint32
+	OriginAddr string
+	OriginPort uint32
+}
+
+// VS Code Remote-SSH uses an SSH local forward to reach the VS Code Server it
+// launches on the remote loopback interface. Keep that working without turning
+// this host into a general-purpose network proxy.
+func (s *Server) directTCP(ctx context.Context, nc ssh.NewChannel) {
+	var req directTCPRequest
+	if ssh.Unmarshal(nc.ExtraData(), &req) != nil || (req.DestAddr != "127.0.0.1" && req.DestAddr != "::1" && req.DestAddr != "localhost") || req.DestPort < 1024 || req.DestPort > 65535 {
+		nc.Reject(ssh.Prohibited, "only loopback TCP forwarding is allowed")
+		return
+	}
+	local, err := net.DialTimeout("tcp", net.JoinHostPort(req.DestAddr, fmt.Sprint(req.DestPort)), 5*time.Second)
+	if err != nil {
+		nc.Reject(ssh.ConnectionFailed, "loopback connection failed")
+		return
+	}
+	ch, requests, err := nc.Accept()
+	if err != nil {
+		local.Close()
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	defer local.Close()
+	defer ch.Close()
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(local, ch); local.(*net.TCPConn).CloseWrite(); done <- struct{}{} }()
+	go func() { io.Copy(ch, local); done <- struct{}{} }()
+	select {
+	case <-ctx.Done():
+	case <-done:
+	}
 }
 
 type ptyRequest struct {
@@ -234,6 +270,17 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 					width, height = req.Width, req.Height
 					accepted = p == nil || p.Resize(width, height) == nil
 				}
+			case "subsystem":
+				var req struct{ Name string }
+				if p == nil && ssh.Unmarshal(r.Payload, &req) == nil && req.Name == "sftp" {
+					accepted = true
+					if r.WantReply {
+						r.Reply(true, nil)
+					}
+					requestTimer.Stop()
+					s.serveSFTP(ch)
+					return
+				}
 			case "shell", "exec":
 				if p != nil {
 					break
@@ -270,6 +317,24 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 				r.Reply(accepted, nil)
 			}
 		}
+	}
+}
+
+func (s *Server) serveSFTP(ch ssh.Channel) {
+	// Current OpenSSH scp uses the SFTP subsystem by default. The working
+	// directory is exposed as the SFTP starting point, with Windows drive roots
+	// available so it has the same Windows-account scope as PowerShell sessions.
+	server, err := sftp.NewServer(ch, sftp.WithServerWorkingDirectory(s.cfg.WorkingDirectory), sftp.WindowsRootEnumeratesDrives())
+	if err != nil {
+		s.log.Error("sftp_start_failed", "error", err.Error())
+		return
+	}
+	defer server.Close()
+	err = server.Serve()
+	if err != nil && !errors.Is(err, io.EOF) {
+		s.log.Info("sftp_end", "error", err.Error())
+	} else {
+		s.log.Info("sftp_end")
 	}
 }
 

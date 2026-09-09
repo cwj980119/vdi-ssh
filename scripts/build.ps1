@@ -24,11 +24,13 @@ try {
     & $GoExe build -trimpath -ldflags '-s -w' -o (Join-Path $taskOutput 'vdi-ssh.exe') .
     if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
     Copy-Item -LiteralPath (Join-Path $taskRoot 'README.ko.md') -Destination $taskOutput
+    Copy-Item -LiteralPath (Join-Path $taskRoot 'Start-VDI-Host.ps1') -Destination $taskOutput
+    Copy-Item -LiteralPath (Join-Path $taskRoot 'Start-VDI-Host.cmd') -Destination $taskOutput
     $taskLicenses = Join-Path $taskOutput 'licenses'
     New-Item -ItemType Directory -Path $taskLicenses -Force | Out-Null
     $taskGoRoot = & $GoExe env GOROOT
     Copy-Item -LiteralPath (Join-Path $taskGoRoot 'LICENSE') -Destination (Join-Path $taskLicenses 'Go-LICENSE.txt') -Force
-    foreach ($taskModule in @('golang.org/x/crypto','golang.org/x/sys')) {
+    foreach ($taskModule in @('golang.org/x/crypto','golang.org/x/sys','github.com/pkg/sftp','github.com/kr/fs')) {
         $taskModuleDir = & $GoExe list -m -f '{{.Dir}}' $taskModule
         if ($LASTEXITCODE -ne 0) { throw 'Cannot find module license' }
         $taskLicenseName = $taskModule.Replace('/','-') + '-LICENSE.txt'
